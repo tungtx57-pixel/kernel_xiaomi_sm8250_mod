@@ -74,7 +74,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE
         # Tải source SukiSU-Ultra vào thư mục kernel
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
+        curl -LSs "https://raw.githubusercontent.com/anotheranhiutangerine/KittiSU/main/kernel/setup.sh" | bash
 
 
     - name: Build kernel
