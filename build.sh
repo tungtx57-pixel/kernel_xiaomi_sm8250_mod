@@ -23,7 +23,7 @@ dts_source=arch/arm64/boot/dts/vendor/qcom
 
 # Kernel local version string (UTC+7, ~23 chars — well under 64-char limit)
 local_version_str="-perf"
-local_version_date_str="-tungtx0507-$(TZ='Asia/Ho_Chi_Minh' date +%Y%m%d)-$(TZ='Asia/Ho_Chi_Minh' date +%H%M)-${GIT_COMMIT_ID}-perf+"
+local_version_date_str="-tungtx57-dinotokuda-$(TZ='Asia/Ho_Chi_Minh' date +%Y%m%d)-$(TZ='Asia/Ho_Chi_Minh' date +%H%M)-${GIT_COMMIT_ID}-perf+"
 
 # --- CẤU HÌNH TELEGRAM BOT TỪ .ENV ---
 ENV_FILE=".env"
@@ -196,7 +196,7 @@ if ! command -v clang >/dev/null 2>&1; then
     exit 1
 fi
 
-# ── ccache (fixed: use with clang, not gcc) ───────────────────────────────────
+# ── ccache ───────────────────────────────────────────────────────────────────
 export CCACHE_DIR="$HOME/.cache/ccache_mikernel"
 echo "CCACHE_DIR: [$CCACHE_DIR]"
 
@@ -274,20 +274,47 @@ if [ $KSU_ENABLE -eq 1 ]; then
     bash "$KSU_SETUP_SCRIPT" main
     rm -f "$KSU_SETUP_SCRIPT"
 
+    # [FIX] Tạo file tương thích cho kernel 4.19 và SuSFS cũ trong kernel
+    echo "Injecting compatibility symbols for kernel 4.19 & SuSFS..."
+    cat << 'EOF' > KernelSU/kernel/compat_susfs_419.c
+#include <linux/types.h>
+#include <linux/workqueue.h>
+#include <linux/sched.h>
+
+/* Global hook variables required by kernel 4.19 inline hooks */
+bool ksu_vfs_read_hook __read_mostly = true;
+bool ksu_execveat_hook __read_mostly = false;
+bool ksu_input_hook __read_mostly = true;
+bool susfs_is_boot_completed_triggered __read_mostly = true;
+
+/* SuSFS compatibility functions for kernel 4.19 */
+static void susfs_dummy_work(struct work_struct *work) {}
+struct work_struct susfs_extra_works = __WORK_INITIALIZER(susfs_extra_works, susfs_dummy_work);
+
+bool susfs_is_current_proc_no_su(void) {
+    return false;
+}
+
+void susfs_set_current_proc_no_su(void) {}
+void susfs_clear_current_proc_no_su(void) {}
+void susfs_set_current_proc_umounted_for_zygote_next(void) {}
+EOF
+
+    echo "kernelsu-objs += compat_susfs_419.o" >> KernelSU/kernel/Kbuild
+
     # [FIX] Bypass lỗi TP hooks không tương thích Non-GKI (kernel 4.19)
     echo "Patching KSU Kbuild to bypass TP hooks check for Non-GKI..."
     sed -i 's/\$(error TP hooks are incompatible with Non-GKI/\$(warning TP hooks are incompatible with Non-GKI/g' drivers/kernelsu/Kbuild 2>/dev/null || true
     
-    # [FIX] Bypass inline hook checks since the kernel has old hooks but we use inline hooking
+    # [FIX] Bypass inline hook checks since the kernel has custom hooks
     echo "Patching KSU inline_hook_check.mk to bypass incompatible hook error..."
     sed -i 's/\$\$(error/\$\$(warning/g' KernelSU/kernel/tools/inline_hook_check.mk 2>/dev/null || true
     
-    # [FIX] Fix undeclared identifier 'CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS' and related missing functions
-    echo "Patching KSU dispatch.c for old SuSFS compatibility..."
+    # [FIX] Fix SuSFS dispatch for kernel 4.19 compatibility
+    echo "Patching KSU dispatch.c for SuSFS compatibility..."
     sed -i 's/CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS/CMD_SUSFS_HIDE_SUS_MNTS_FOR_ALL_PROCS/g' KernelSU/kernel/supercall/dispatch.c 2>/dev/null || true
     sed -i 's/susfs_set_hide_sus_mnts_for_non_su_procs/susfs_set_hide_sus_mnts_for_all_procs/g' KernelSU/kernel/supercall/dispatch.c 2>/dev/null || true
     sed -i '/susfs_start_sdcard_monitor_fn/d' KernelSU/kernel/supercall/dispatch.c 2>/dev/null || true
-    sed -i '/susfs_extra_works/d' KernelSU/kernel/feature/kernel_umount.c 2>/dev/null || true
     
     # [FIX] Fix pkg_observer.c for Linux 4.19 fsnotify_ops
     echo "Patching KSU pkg_observer.c for kernel 4.19 compatibility..."
@@ -314,8 +341,6 @@ rm -rf out/ anykernel/
 echo "Cloning AnyKernel3 (repo: https://github.com/liyafe1997/AnyKernel3)"
 git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
 sed -i 's/device.name5=lmi/device.name5=lmi\ndevice.name6=thyme/g' anykernel/anykernel.sh
-
-# No longer patching defconfig with sed. Will use scripts/config instead.
 
 # ── Building for MIUI ─────────────────────────────────────────────────────────
 if [ "$OS_TYPE" == "miui" ] || [ "$OS_TYPE" == "both" ]; then
@@ -457,12 +482,7 @@ cp out/arch/arm64/boot/dtb anykernel/kernels/
 
 echo "Build for MIUI finished."
 
-# --- BÁO CÁO THÀNH CÔNG ---
-END_TIME=$(date +%s)
-ELAPSED_SECS=$((END_TIME - SCRIPT_START_TIME))
-FORMATTED_TIME=$(printf "%02d:%02d:%02d" $((ELAPSED_SECS/3600)) $(((ELAPSED_SECS%3600)/60)) $((ELAPSED_SECS%60)))
-
-# ── Packaging ─────────────────────────────────────────────────────────────────
+# ── Packaging MIUI ────────────────────────────────────────────────────────────
 cd anykernel
 
 ZIP_FILENAME=Kernel_MIUI_${TARGET_DEVICE}_${KSU_ZIP_STR}_${GIT_COMMIT_ID}_$(TZ='Asia/Ho_Chi_Minh' date +'%Y%m%d_%H%M%S')_anykernel3.zip
